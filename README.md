@@ -181,8 +181,8 @@ What samplers are available in my Stable Diffusion setup?
 
 You can customize the behavior of the MCP server by modifying `src/config.ts`:
 
-* `SD_API_URL`: The URL of your Stable Diffusion WebUI API (default: http://127.0.0.1:7861)
-* `OUTPUT_DIR`: Directory where generated images will be saved (default: ./output)
+* `SD_API_URL`: The URL of your Stable Diffusion WebUI API (default: http://127.0.0.1:7860)
+* `OUTPUT_DIR`: Directory where generated images will be saved (default: C:\\SD_Output)
 * `DEFAULT_PARAMS`: Default image generation parameters optimized for SDXL (1024x1024 resolution)
 
 After modifying, rebuild the project with `npm run build`.
@@ -201,7 +201,7 @@ After modifying, rebuild the project with `npm run build`.
 
 * Make sure Stable Diffusion WebUI is running
 * Verify that it was started with the `--api` flag
-* Check if the default port (7861) is being used or if you need to specify a custom port in `config.ts`
+* Check if the default port (7860) is being used or if you need to specify a custom port in `config.ts`
 
 #### Images not being generated
 
