@@ -2,7 +2,7 @@
 
 import fetch, { Response } from 'node-fetch';
 
-// インターフェース定義の追加
+// Add interface definitions
 interface SDModelInfo {
   title: string;
   name: string;
@@ -33,7 +33,7 @@ export class StableDiffusionAPI {
     this.baseUrl = baseUrl;
   }
 
-  // タイムアウト付きのfetchヘルパーメソッド
+  // Fetch helper method with timeout
   private async fetchWithTimeout(url: string, options: any = {}, timeoutMs = 30000): Promise<Response> {
     const controller = new AbortController();
     const timeout = setTimeout(() => controller.abort(), timeoutMs);
@@ -49,7 +49,7 @@ export class StableDiffusionAPI {
     }
   }
 
-  // リトライヘルパーメソッド
+  // Retry helper method
   private async withRetry<T>(
     fn: () => Promise<T>,
     maxRetries = 3,
@@ -63,7 +63,7 @@ export class StableDiffusionAPI {
       } catch (error) {
         lastError = error;
         if (attempt < maxRetries - 1) {
-          console.error(`試行 ${attempt + 1} が失敗しました。${delayMs}ms後に再試行します...`);
+          console.error(`Attempt ${attempt + 1} failed. Retrying in ${delayMs}ms...`);
           await new Promise(resolve => setTimeout(resolve, delayMs));
         }
       }
@@ -78,9 +78,9 @@ export class StableDiffusionAPI {
       return response.ok;
     } catch (error) {
       if (error instanceof Error && error.name === 'AbortError') {
-        console.error('API状態確認中にリクエストタイムアウトが発生しました');
+        console.error('Request timeout occurred during API connection check');
       } else {
-        console.error('API状態確認中にエラーが発生しました:', error);
+        console.error('Error occurred during API connection check:', error);
       }
       return false;
     }
@@ -92,7 +92,7 @@ export class StableDiffusionAPI {
       const models = await response.json() as SDModelInfo[];
       return models.map(model => model.title);
     } catch (error) {
-      console.error("モデル一覧の取得中にエラーが発生しました:", error);
+      console.error("Error occurred while retrieving model list:", error);
       return [];
     }
   }
@@ -103,7 +103,7 @@ export class StableDiffusionAPI {
       const samplers = await response.json() as SDSamplerInfo[];
       return samplers.map(sampler => sampler.name);
     } catch (error) {
-      console.error("サンプラー一覧の取得中にエラーが発生しました:", error);
+      console.error("Error occurred while retrieving sampler list:", error);
       return [];
     }
   }
@@ -121,7 +121,7 @@ export class StableDiffusionAPI {
       });
       return response.ok;
     } catch (error) {
-      console.error(`モデル ${modelName} への変更中にエラーが発生しました:`, error);
+      console.error(`Error occurred while changing to model ${modelName}:`, error);
       return false;
     }
   }
@@ -135,22 +135,22 @@ export class StableDiffusionAPI {
             "Content-Type": "application/json"
           },
           body: JSON.stringify(params)
-        }, 60000); // 画像生成は60秒のタイムアウトを設定
+        }, 60000); // Set 60 second timeout for image generation
         
         if (!response.ok) {
           const errorText = await response.text();
-          throw new Error(`テキストから画像APIの呼び出しに失敗しました: ${response.status} ${response.statusText} - ${errorText}`);
+          throw new Error(`Failed to call text-to-image API: ${response.status} ${response.statusText} - ${errorText}`);
         }
         
         const data = await response.json() as SDTextToImageResponse;
         if (!data.images || data.images.length === 0) {
-          throw new Error("テキストから画像APIがイメージを返しませんでした");
+          throw new Error("Text-to-image API did not return any images");
         }
         
         return data.images[0];
       });
     } catch (error) {
-      console.error("リトライ後もテキストから画像APIの呼び出しに失敗しました:", error);
+      console.error("Failed to call text-to-image API even after retries:", error);
       return null;
     }
   }
@@ -164,22 +164,22 @@ export class StableDiffusionAPI {
             "Content-Type": "application/json"
           },
           body: JSON.stringify(params)
-        }, 60000); // 画像生成は60秒のタイムアウトを設定
+        }, 60000); // Set 60 second timeout for image generation
         
         if (!response.ok) {
           const errorText = await response.text();
-          throw new Error(`画像から画像APIの呼び出しに失敗しました: ${response.status} ${response.statusText} - ${errorText}`);
+          throw new Error(`Failed to call image-to-image API: ${response.status} ${response.statusText} - ${errorText}`);
         }
         
         const data = await response.json() as SDImageToImageResponse;
         if (!data.images || data.images.length === 0) {
-          throw new Error("画像から画像APIがイメージを返しませんでした");
+          throw new Error("Image-to-image API did not return any images");
         }
         
         return data.images[0];
       });
     } catch (error) {
-      console.error("リトライ後も画像から画像APIの呼び出しに失敗しました:", error);
+      console.error("Failed to call image-to-image API even after retries:", error);
       return null;
     }
   }
