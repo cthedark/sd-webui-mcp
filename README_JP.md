@@ -39,7 +39,7 @@
 
 `src/config.ts` ファイルで以下の設定が可能です：
 
-- `SD_API_URL`: Stable Diffusion WebUI APIのURL（デフォルト: `http://127.0.0.1:7861`）
+- `SD_API_URL`: Stable Diffusion WebUI APIのURL（デフォルト: `http://127.0.0.1:7860`）
 - `OUTPUT_DIR`: 生成された画像の保存先ディレクトリ
 - `DEFAULT_PARAMS`: 画像生成のデフォルトパラメータ（サイズ、ステップ数など）
 
