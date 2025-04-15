@@ -10,7 +10,7 @@ import { SD_API_URL, OUTPUT_DIR } from '../config.js';
 
 const api = new StableDiffusionAPI(SD_API_URL);
 
-// エラーレスポンスを作成するヘルパー
+// Helper function to create error response
 function createErrorResponse(message: string): any {
   return {
     content: [
@@ -22,7 +22,7 @@ function createErrorResponse(message: string): any {
   };
 }
 
-// 画像付き成功レスポンスを作成するヘルパー
+// Helper function to create image success response
 function createImageResponse(
   messageText: string,
   imageData: string,
@@ -43,36 +43,36 @@ function createImageResponse(
   };
 }
 
-// Base64画像を保存する
+// Save Base64 image to file
 async function saveBase64Image(base64Image: string): Promise<string> {
   try {
-    // Base64文字列からデータ部分のみを抽出
+    // Extract only data portion from the Base64 string
     const data = base64Image.split(',')[1] || base64Image;
     const buffer = Buffer.from(data, 'base64');
     
-    // 出力ファイル名を生成（日時を使用）
-    const timestamp = new Date().toISOString().replace(/:/g, '-').replace(/\..+/, '');
+    // Generate output filename (using timestamp)
+    const timestamp = new Date().toISOString().replace(/:/g, '-').replace(/\.+/, '');
     const fileName = `sd_image_${timestamp}.png`;
     const filePath = path.join(OUTPUT_DIR, fileName);
     
-    // 画像を保存
+    // Save the image
     await fs.writeFile(filePath, buffer);
     
     return filePath;
   } catch (error) {
-    console.error(`画像保存エラー: ${error instanceof Error ? error.message : String(error)}`);
+    console.error(`Image save error: ${error instanceof Error ? error.message : String(error)}`);
     throw error;
   }
 }
 
-// 画像パスの検証
+// Validate image path
 async function validateImagePath(imagePath: string): Promise<boolean> {
   if (!await fs.pathExists(imagePath)) {
     return false;
   }
   
   try {
-    // ファイルが有効な画像かどうかをメタデータを読み取って確認
+    // Attempt to read metadata to validate it's a valid image
     await sharp(imagePath).metadata();
     return true;
   } catch (error) {
@@ -80,81 +80,81 @@ async function validateImagePath(imagePath: string): Promise<boolean> {
   }
 }
 
-// サムネイル作成とBase64変換
+// Create thumbnail and convert to Base64
 async function createThumbnailAsBase64(imagePath: string): Promise<string> {
   try {
-    // ファイルの存在確認
+    // Check if file exists
     const exists = await fs.pathExists(imagePath);
     if (!exists) {
-      throw new Error(`ファイルが見つかりません: ${imagePath}`);
+      throw new Error(`File not found: ${imagePath}`);
     }
     
-    // まず画像メタデータを取得
+    // Get image metadata first
     const metadata = await sharp(imagePath).metadata();
-    const isLarge = (metadata.width || 0) * (metadata.height || 0) > 5000000; // 5MPしきい値
+    const isLarge = (metadata.width || 0) * (metadata.height || 0) > 5000000; // 5MP threshold
     
-    // 大きい画像にはよりメモリ効率の良いアプローチを使用
+    // Use appropriate options for large images
     let pipeline = sharp(imagePath, { 
-      limitInputPixels: 100000000, // より大きな画像を許可するがDOSを防止
-      sequentialRead: isLarge // 大きな画像には順次読み取りを使用
+      limitInputPixels: 100000000, // Allow larger images but prevent DOS
+      sequentialRead: isLarge // Use sequential reading for large images
     });
     
-    // サムネイルを作成
+    // Create thumbnail
     const thumbnailBuffer = await pipeline
       .resize(512, 512, { fit: 'inside', withoutEnlargement: true })
-      .png({ compressionLevel: 9 }) // 最大圧縮
+      .png({ compressionLevel: 9 }) // Maximum compression
       .toBuffer();
     
-    // バッファをbase64文字列に変換
+    // Convert buffer to base64 string
     const thumbnailBase64 = thumbnailBuffer.toString('base64');
     
     return thumbnailBase64;
   } catch (error) {
-    console.error(`サムネイル作成エラー: ${error instanceof Error ? error.message : String(error)}`);
+    console.error(`Thumbnail creation error: ${error instanceof Error ? error.message : String(error)}`);
     throw error;
   }
 }
 
-// 画像生成ツールのスキーマ定義
+// Define schema for image generation tool
 const generateImageSchema = {
-  prompt: z.string().describe("生成する画像を説明するテキストプロンプト"),
-  negative_prompt: z.string().optional().describe("画像に含めるべきではないものを指定する否定的なプロンプト"),
-  width: z.number().default(1024).describe("画像の幅（デフォルト: 1024）"),
-  height: z.number().default(1024).describe("画像の高さ（デフォルト: 1024）"),
-  cfg_scale: z.number().default(7).describe("CFGスケール（デフォルト: 7）"),
-  steps: z.number().default(30).describe("サンプリングステップ数（デフォルト: 30）"),
-  sampler_index: z.string().default("Euler a").describe("使用するサンプラー（デフォルト: Euler a）"),
-  seed: z.number().default(-1).describe("ランダムシード（-1でランダム）")
+  prompt: z.string().describe("Text prompt describing the image to generate"),
+  negative_prompt: z.string().optional().describe("Negative prompt specifying what should NOT be in the image"),
+  width: z.number().default(1024).describe("Image width (default: 1024)"),
+  height: z.number().default(1024).describe("Image height (default: 1024)"),
+  cfg_scale: z.number().default(7).describe("CFG scale (default: 7)"),
+  steps: z.number().default(30).describe("Sampling steps (default: 30)"),
+  sampler_index: z.string().default("Euler a").describe("Sampler to use (default: Euler a)"),
+  seed: z.number().default(-1).describe("Random seed (-1 for random)")
 };
 
-// 画像編集ツールのスキーマ定義
+// Define schema for image editing tool
 const editImageSchema = {
-  image_path: z.string().describe("編集する入力画像へのパス"),
-  prompt: z.string().describe("希望する変更を説明するテキストプロンプト"),
-  negative_prompt: z.string().optional().describe("画像に含めるべきではないものを指定する否定的なプロンプト"),
-  denoising_strength: z.number().default(0.75).describe("画像をどれだけ変更するか（0.0-1.0、デフォルト: 0.75）"),
-  cfg_scale: z.number().default(7).describe("CFGスケール（デフォルト: 7）"),
-  steps: z.number().default(30).describe("サンプリングステップ数（デフォルト: 30）"),
-  sampler_index: z.string().default("Euler a").describe("使用するサンプラー（デフォルト: Euler a）"),
-  seed: z.number().default(-1).describe("ランダムシード（-1でランダム）"),
+  image_path: z.string().describe("Path to input image to edit"),
+  prompt: z.string().describe("Text prompt describing the desired changes"),
+  negative_prompt: z.string().optional().describe("Negative prompt specifying what should NOT be in the image"),
+  denoising_strength: z.number().default(0.75).describe("How much to change the image (0.0-1.0, default: 0.75)"),
+  cfg_scale: z.number().default(7).describe("CFG scale (default: 7)"),
+  steps: z.number().default(30).describe("Sampling steps (default: 30)"),
+  sampler_index: z.string().default("Euler a").describe("Sampler to use (default: Euler a)"),
+  seed: z.number().default(-1).describe("Random seed (-1 for random)"),
 };
 
 export function registerImageTools(server: McpServer): void {
   server.tool(
     "generate-image",
-    "テキストプロンプトからStable Diffusionを使用して画像を生成",
+    "Generate an image using Stable Diffusion from a text prompt",
     generateImageSchema,
     async ({ prompt, negative_prompt, width, height, cfg_scale, steps, sampler_index, seed }) => {
       try {
-        // APIが接続されているか確認
+        // Check if API is connected
         const isConnected = await api.checkStatus();
         if (!isConnected) {
-          return createErrorResponse("Stable Diffusion APIに接続できません。WebUIが実行中であることを確認してください。");
+          return createErrorResponse("Cannot connect to Stable Diffusion API. Please ensure WebUI is running.");
         }
 
-        console.error(`画像生成リクエスト: "${prompt}" (${width}x${height})`);
+        console.error(`Image generation request: "${prompt}" (${width}x${height})`);
         
-        // Stable Diffusionに画像生成リクエスト
+        // Request image generation from Stable Diffusion
         const base64Image = await api.textToImage({
           prompt,
           negative_prompt: negative_prompt || "",
@@ -168,60 +168,60 @@ export function registerImageTools(server: McpServer): void {
         });
 
         if (!base64Image) {
-          return createErrorResponse("画像生成に失敗しました。Stable Diffusion APIからの応答がありません。");
+          return createErrorResponse("Failed to generate image. No response from Stable Diffusion API.");
         }
 
         try {
-          // 画像をファイルとして保存
+          // Save image to file
           const imagePath = await saveBase64Image(base64Image);
-          console.error(`画像を保存しました: ${imagePath}`);
+          console.error(`Image saved: ${imagePath}`);
           
-          // サムネイルを作成（メモリ効率が良いバージョン）
+          // Create thumbnail (memory-efficient version)
           const thumbnailBase64 = await createThumbnailAsBase64(imagePath);
           
-          // 成功レスポンスを返す
+          // Return success response
           return createImageResponse(
-            `画像が正常に生成されました: "${prompt}"\n\n画像パス: ${imagePath}`,
+            `Image successfully generated: "${prompt}"\n\nImage path: ${imagePath}`,
             thumbnailBase64
           );
         } catch (saveError) {
-          console.error("画像保存エラー:", saveError);
-          return createErrorResponse(`画像生成は成功しましたが、保存中にエラーが発生しました: ${saveError instanceof Error ? saveError.message : String(saveError)}`);
+          console.error("Image save error:", saveError);
+          return createErrorResponse(`Image generation succeeded, but an error occurred during saving: ${saveError instanceof Error ? saveError.message : String(saveError)}`);
         }
       } catch (error) {
-        console.error("画像生成エラー:", error);
-        return createErrorResponse(`画像生成中にエラーが発生しました: ${error instanceof Error ? error.message : String(error)}`);
+        console.error("Image generation error:", error);
+        return createErrorResponse(`Error occurred during image generation: ${error instanceof Error ? error.message : String(error)}`);
       }
     }
   );
 
   server.tool(
     "edit-image",
-    "Stable Diffusionを使用して既存の画像を編集",
+    "Edit an existing image using Stable Diffusion",
     editImageSchema,
     async ({ image_path, prompt, negative_prompt, denoising_strength, cfg_scale, steps, sampler_index, seed }) => {
       try {
-        // 画像パスを検証
+        // Validate image path
         if (!await validateImagePath(image_path)) {
           return createErrorResponse(
-            `無効な画像パス: ${image_path}。有効な画像ファイルへのパスを指定してください。`
+            `Invalid image path: ${image_path}. Please specify a path to a valid image file.`
           );
         }
         
-        // APIが接続されているか確認
+        // Check if API is connected
         const isConnected = await api.checkStatus();
         if (!isConnected) {
-          return createErrorResponse("Stable Diffusion APIに接続できません。WebUIが実行中であることを確認してください。");
+          return createErrorResponse("Cannot connect to Stable Diffusion API. Please ensure WebUI is running.");
         }
 
-        console.error(`画像編集リクエスト: "${prompt}" (入力: ${image_path})`);
+        console.error(`Image edit request: "${prompt}" (input: ${image_path})`);
         
         try {
-          // 入力画像を読み込んでbase64に変換
+          // Read input image and convert to base64
           const imageBuffer = await fs.readFile(image_path);
           const base64Image = imageBuffer.toString('base64');
           
-          // 画像編集を実行
+          // Perform image editing
           const resultBase64 = await api.imageToImage({
             init_images: [base64Image],
             prompt,
@@ -234,28 +234,28 @@ export function registerImageTools(server: McpServer): void {
           });
 
           if (!resultBase64) {
-            return createErrorResponse("画像編集に失敗しました。Stable Diffusion APIからの応答がありません。");
+            return createErrorResponse("Failed to edit image. No response from Stable Diffusion API.");
           }
           
-          // 編集された画像を保存
+          // Save edited image
           const editedImagePath = await saveBase64Image(resultBase64);
-          console.error(`編集された画像を保存しました: ${editedImagePath}`);
+          console.error(`Edited image saved: ${editedImagePath}`);
           
-          // サムネイルを作成
+          // Create thumbnail
           const thumbnailBase64 = await createThumbnailAsBase64(editedImagePath);
           
-          // 成功レスポンスを返す
+          // Return success response
           return createImageResponse(
-            `画像が正常に編集されました: "${prompt}"\n\n元の画像: ${image_path}\n編集済み画像: ${editedImagePath}`,
+            `Image successfully edited: "${prompt}"\n\nOriginal image: ${image_path}\nEdited image: ${editedImagePath}`,
             thumbnailBase64
           );
         } catch (processError) {
-          console.error("画像処理エラー:", processError);
-          return createErrorResponse(`画像の読み込みまたは処理中にエラーが発生しました: ${processError instanceof Error ? processError.message : String(processError)}`);
+          console.error("Image processing error:", processError);
+          return createErrorResponse(`Error occurred while reading or processing the image: ${processError instanceof Error ? processError.message : String(processError)}`);
         }
       } catch (error) {
-        console.error("画像編集エラー:", error);
-        return createErrorResponse(`画像編集中にエラーが発生しました: ${error instanceof Error ? error.message : String(error)}`);
+        console.error("Image editing error:", error);
+        return createErrorResponse(`Error occurred during image editing: ${error instanceof Error ? error.message : String(error)}`);
       }
     }
   );
