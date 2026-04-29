@@ -13,10 +13,6 @@ export const server = new McpServer({
   name: "StableDiffusionLocal",
   version: "1.0.0",
   description: "MCP Server for local Stable Diffusion WebUI",
-  capabilities: {
-    resources: {},
-    tools: {} // Tools will be registered later
-  }
 });
 
 // Register all tools
