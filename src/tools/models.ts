@@ -52,8 +52,41 @@ export function registerModelTools(server: McpServer) {
       // Get available models first to validate
       const models = await api.getModels();
       
-      // Check if the model exists
-      if (!models.some(model => model === model_name)) {
+      // Try exact match first
+      let matchedModel = models.find(model => model === model_name);
+      
+      // If no exact match, try fuzzy matching by extracting the filename
+      // (strip directory separators and file extension) and checking if any
+      // available model contains it as a case-insensitive substring.
+      // This handles Windows backslash paths and partial names gracefully.
+      if (!matchedModel) {
+        // Strip path separators (both / and \) and remove common model file extensions
+        const basename = model_name
+          .replace(/^.*[/\\]/, "")       // drop everything before the last slash or backslash
+          .replace(/\.\w+$/, "");         // drop file extension like .safetensors, .ckpt, etc.
+        const lowerBasename = basename.toLowerCase();
+
+        const fuzzyMatches = models.filter(
+          model => model.toLowerCase().includes(lowerBasename)
+        );
+
+        if (fuzzyMatches.length === 1) {
+          matchedModel = fuzzyMatches[0];
+        } else if (fuzzyMatches.length > 1) {
+          return {
+            content: [
+              {
+                type: "text",
+                text: `Multiple models match "${model_name}":\n\n` +
+                  fuzzyMatches.map(model => `• ${model}`).join("\n") +
+                  `\n\nPlease provide a more specific name.`
+              }
+            ]
+          };
+        }
+      }
+
+      if (!matchedModel) {
         return {
           content: [
             {
@@ -66,7 +99,7 @@ export function registerModelTools(server: McpServer) {
       }
       
       // Attempt to change the model
-      const success = await api.changeModel(model_name);
+      const success = await api.changeModel(matchedModel);
       
       if (success) {
         return {
