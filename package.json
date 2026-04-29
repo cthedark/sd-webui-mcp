@@ -19,7 +19,7 @@
   "author": "boxi-rgb",
   "license": "MIT",
   "dependencies": {
-    "@modelcontextprotocol/sdk": "^1.8.0",
+    "@modelcontextprotocol/sdk": "^1.29.0",
     "fs-extra": "^11.1.1",
     "node-fetch": "^3.3.2",
     "sharp": "^0.34.1",

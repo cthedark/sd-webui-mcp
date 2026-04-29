@@ -140,10 +140,12 @@ const editImageSchema = {
 };
 
 export function registerImageTools(server: McpServer): void {
-  server.tool(
+  server.registerTool(
     "generate-image",
-    "Generate an image using Stable Diffusion from a text prompt",
-    generateImageSchema,
+    {
+      description: "Generate an image using Stable Diffusion from a text prompt",
+      inputSchema: generateImageSchema,
+    },
     async ({ prompt, negative_prompt, width, height, cfg_scale, steps, sampler_index, seed }) => {
       try {
         // Check if API is connected
@@ -195,10 +197,12 @@ export function registerImageTools(server: McpServer): void {
     }
   );
 
-  server.tool(
+  server.registerTool(
     "edit-image",
-    "Edit an existing image using Stable Diffusion",
-    editImageSchema,
+    {
+      description: "Edit an existing image using Stable Diffusion",
+      inputSchema: editImageSchema,
+    },
     async ({ image_path, prompt, negative_prompt, denoising_strength, cfg_scale, steps, sampler_index, seed }) => {
       try {
         // Validate image path

@@ -8,10 +8,11 @@ const api = new StableDiffusionAPI(SD_API_URL);
 // Register utility tools
 export function registerUtilityTools(server: McpServer) {
   // Check connection status
-  server.tool(
+  server.registerTool(
     "check-status",
-    "Check connection to Stable Diffusion WebUI",
-    {},
+    {
+      description: "Check connection to Stable Diffusion WebUI",
+    },
     async () => {
       const isConnected = await api.checkStatus();
       

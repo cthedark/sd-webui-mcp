@@ -11,7 +11,7 @@ fs.ensureDirSync(OUTPUT_DIR);
 // Create the MCP server instance
 export const server = new McpServer({
   name: "StableDiffusionLocal",
-  version: "1.0.0",
+  version: "1.0.1",
   description: "MCP Server for local Stable Diffusion WebUI",
 });
 

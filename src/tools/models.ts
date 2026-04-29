@@ -9,10 +9,11 @@ const api = new StableDiffusionAPI(SD_API_URL);
 // Register model management tools
 export function registerModelTools(server: McpServer) {
   // List available models
-  server.tool(
+  server.registerTool(
     "list-models",
-    "List all available Stable Diffusion models",
-    {},
+    {
+      description: "List all available Stable Diffusion models",
+    },
     async () => {
       const models = await api.getModels();
       
@@ -39,11 +40,13 @@ export function registerModelTools(server: McpServer) {
   );
   
   // Change active model
-  server.tool(
+  server.registerTool(
     "change-model",
-    "Change the active Stable Diffusion model",
     {
-      model_name: z.string().describe("Name of the model to switch to")
+      description: "Change the active Stable Diffusion model",
+      inputSchema: {
+        model_name: z.string().describe("Name of the model to switch to")
+      },
     },
     async ({ model_name }: { model_name: string }) => {
       // Get available models first to validate
@@ -88,10 +91,11 @@ export function registerModelTools(server: McpServer) {
   );
   
   // List samplers
-  server.tool(
+  server.registerTool(
     "list-samplers",
-    "List all available samplers in Stable Diffusion",
-    {},
+    {
+      description: "List all available samplers in Stable Diffusion",
+    },
     async () => {
       const samplers = await api.getSamplers();
       
