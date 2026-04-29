@@ -6,9 +6,35 @@ import sharp from 'sharp';
 import { z } from 'zod';
 import { McpServer } from '@modelcontextprotocol/sdk/server/mcp.js';
 import { StableDiffusionAPI } from '../api/sd-api.js';
-import { SD_API_URL, OUTPUT_DIR } from '../config.js';
+import { SD_API_URL, OUTPUT_DIR, USE_DEFAULT_NEGATIVE_PROMPT, DEFAULT_NEGATIVE_PROMPTS } from '../config.js';
 
 const api = new StableDiffusionAPI(SD_API_URL);
+
+// Build the final negative prompt by merging defaults (when enabled) with
+// any user-supplied terms, then deduplicating.
+function buildNegativePrompt(userPrompt: string | undefined): string {
+  const userTerms = (userPrompt || "")
+    .split(",")
+    .map(t => t.trim().toLowerCase())
+    .filter(Boolean);
+
+  if (!USE_DEFAULT_NEGATIVE_PROMPT) {
+    return userTerms.join(", ");
+  }
+
+  const defaultTerms = DEFAULT_NEGATIVE_PROMPTS.map(t => t.trim().toLowerCase());
+  const seen = new Set<string>();
+  const merged: string[] = [];
+
+  for (const term of [...defaultTerms, ...userTerms]) {
+    if (!seen.has(term)) {
+      seen.add(term);
+      merged.push(term);
+    }
+  }
+
+  return merged.join(", ");
+}
 
 // Helper function to create error response
 function createErrorResponse(message: string): any {
@@ -157,9 +183,12 @@ export function registerImageTools(server: McpServer): void {
         console.error(`Image generation request: "${prompt}" (${width}x${height})`);
         
         // Request image generation from Stable Diffusion
+        const finalNegativePrompt = buildNegativePrompt(negative_prompt);
+        console.error(`Using negative prompt: "${finalNegativePrompt}"`);
+
         const base64Image = await api.textToImage({
           prompt,
-          negative_prompt: negative_prompt || "",
+          negative_prompt: finalNegativePrompt,
           width,
           height,
           cfg_scale,
@@ -226,10 +255,13 @@ export function registerImageTools(server: McpServer): void {
           const base64Image = imageBuffer.toString('base64');
           
           // Perform image editing
+          const finalNegativePrompt = buildNegativePrompt(negative_prompt);
+          console.error(`Using negative prompt: "${finalNegativePrompt}"`);
+
           const resultBase64 = await api.imageToImage({
             init_images: [base64Image],
             prompt,
-            negative_prompt: negative_prompt || "",
+            negative_prompt: finalNegativePrompt,
             denoising_strength,
             cfg_scale,
             steps,

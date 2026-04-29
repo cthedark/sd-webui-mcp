@@ -6,6 +6,27 @@ export const SD_API_URL = process.env.SD_API_URL || "http://127.0.0.1:7860";
 // Output directory for generated images - ★パスを直接指定に修正★
 export const OUTPUT_DIR = "C:\\SD_Output"; // Windowsのパス区切り文字'\'は二重'\\'にするか、'/'を使用
 
+// When true, automatically prepend standard negative prompts to every generation
+export const USE_DEFAULT_NEGATIVE_PROMPT = true;
+
+// Standard negative prompt terms that improve output quality
+export const DEFAULT_NEGATIVE_PROMPTS = [
+  "bad_anatomy",
+  "bad_quality",
+  "ugly",
+  "watermark",
+  "text",
+  "deformed",
+  "extra_fingers",
+  "bad_hands",
+  "blurry",
+  "low_quality",
+  "worst_quality",
+  "signature",
+  "cropped",
+  "jpeg_artifacts",
+];
+
 // Default image generation parameters optimized for SDXL (1024x1024)
 export const DEFAULT_PARAMS = {
   width: 1024, // ← 1024 のまま
