@@ -6,7 +6,7 @@ import sharp from 'sharp';
 import { z } from 'zod';
 import { McpServer } from '@modelcontextprotocol/sdk/server/mcp.js';
 import { StableDiffusionAPI } from '../api/sd-api.js';
-import { SD_API_URL, OUTPUT_DIR, USE_DEFAULT_NEGATIVE_PROMPT, DEFAULT_NEGATIVE_PROMPTS } from '../config.js';
+import { SD_API_URL, OUTPUT_DIR, USE_DEFAULT_NEGATIVE_PROMPT, DEFAULT_NEGATIVE_PROMPTS, SEND_FULL_IMAGE_BASE64 } from '../config.js';
 
 const api = new StableDiffusionAPI(SD_API_URL);
 
@@ -106,37 +106,45 @@ async function validateImagePath(imagePath: string): Promise<boolean> {
   }
 }
 
-// Create thumbnail and convert to Base64
-async function createThumbnailAsBase64(imagePath: string): Promise<string> {
+// Convert an image to base64 for the MCP response.
+// When SEND_FULL_IMAGE_BASE64 is true, sends the full resolution as a compressed JPEG.
+// Otherwise, sends a 512px thumbnail PNG.
+async function imageToResponseBase64(imagePath: string): Promise<{ data: string; mimeType: string }> {
   try {
-    // Check if file exists
     const exists = await fs.pathExists(imagePath);
     if (!exists) {
       throw new Error(`File not found: ${imagePath}`);
     }
-    
-    // Get image metadata first
+
     const metadata = await sharp(imagePath).metadata();
-    const isLarge = (metadata.width || 0) * (metadata.height || 0) > 5000000; // 5MP threshold
-    
-    // Use appropriate options for large images
-    let pipeline = sharp(imagePath, { 
-      limitInputPixels: 100000000, // Allow larger images but prevent DOS
-      sequentialRead: isLarge // Use sequential reading for large images
+    const isLarge = (metadata.width || 0) * (metadata.height || 0) > 5000000;
+
+    let pipeline = sharp(imagePath, {
+      limitInputPixels: 100000000,
+      sequentialRead: isLarge
     });
-    
-    // Create thumbnail
-    const thumbnailBuffer = await pipeline
-      .resize(512, 512, { fit: 'inside', withoutEnlargement: true })
-      .png({ compressionLevel: 9 }) // Maximum compression
-      .toBuffer();
-    
-    // Convert buffer to base64 string
-    const thumbnailBase64 = thumbnailBuffer.toString('base64');
-    
-    return thumbnailBase64;
+
+    let buffer: Buffer;
+    let mimeType: string;
+
+    if (SEND_FULL_IMAGE_BASE64) {
+      // Full resolution, compressed JPEG
+      buffer = await pipeline
+        .jpeg({ quality: 80 })
+        .toBuffer();
+      mimeType = "image/jpeg";
+    } else {
+      // 512px thumbnail PNG
+      buffer = await pipeline
+        .resize(512, 512, { fit: 'inside', withoutEnlargement: true })
+        .png({ compressionLevel: 9 })
+        .toBuffer();
+      mimeType = "image/png";
+    }
+
+    return { data: buffer.toString('base64'), mimeType };
   } catch (error) {
-    console.error(`Thumbnail creation error: ${error instanceof Error ? error.message : String(error)}`);
+    console.error(`Image conversion error: ${error instanceof Error ? error.message : String(error)}`);
     throw error;
   }
 }
@@ -216,13 +224,14 @@ export function registerImageTools(server: McpServer): void {
           const imagePath = await saveBase64Image(base64Image);
           console.error(`Image saved: ${imagePath}`);
           
-          // Create thumbnail (memory-efficient version)
-          const thumbnailBase64 = await createThumbnailAsBase64(imagePath);
+          // Create response image (full-res or thumbnail based on config)
+          const responseImage = await imageToResponseBase64(imagePath);
           
           // Return success response
           return createImageResponse(
             `Image successfully generated: "${prompt}"\n\nImage path: ${imagePath}`,
-            thumbnailBase64
+            responseImage.data,
+            responseImage.mimeType
           );
         } catch (saveError) {
           console.error("Image save error:", saveError);
@@ -286,13 +295,14 @@ export function registerImageTools(server: McpServer): void {
           const editedImagePath = await saveBase64Image(resultBase64);
           console.error(`Edited image saved: ${editedImagePath}`);
           
-          // Create thumbnail
-          const thumbnailBase64 = await createThumbnailAsBase64(editedImagePath);
+          // Create response image (full-res or thumbnail based on config)
+          const responseImage = await imageToResponseBase64(editedImagePath);
           
           // Return success response
           return createImageResponse(
             `Image successfully edited: "${prompt}"\n\nOriginal image: ${image_path}\nEdited image: ${editedImagePath}`,
-            thumbnailBase64
+            responseImage.data,
+            responseImage.mimeType
           );
         } catch (processError) {
           console.error("Image processing error:", processError);

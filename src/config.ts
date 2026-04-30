@@ -27,6 +27,11 @@ export const DEFAULT_NEGATIVE_PROMPTS = [
   "jpeg_artifacts",
 ];
 
+// When true, send the full-resolution image as a compressed JPEG in the response.
+// When false, send a 512px thumbnail PNG instead (smaller payload).
+// Recommended: true for LM Studio, false for Claude Desktop.
+export const SEND_FULL_IMAGE_BASE64 = true;
+
 // Default image generation parameters optimized for SDXL (1024x1024)
 export const DEFAULT_PARAMS = {
   width: 1024, // ← 1024 のまま
