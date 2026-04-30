@@ -150,7 +150,12 @@ const generateImageSchema = {
   cfg_scale: z.number().default(7).describe("CFG scale (default: 7)"),
   steps: z.number().default(30).describe("Sampling steps (default: 30)"),
   sampler_index: z.string().default("Euler a").describe("Sampler to use (default: Euler a)"),
-  seed: z.number().default(-1).describe("Random seed (-1 for random)")
+  seed: z.number().default(-1).describe("Random seed (-1 for random)"),
+  enable_hr: z.boolean().default(false).describe("Enable hi-res fix for higher quality upscaled output (default: false)"),
+  hr_scale: z.number().default(1.5).describe("Hi-res fix upscale factor (default: 1.5)"),
+  hr_upscaler: z.string().default("Latent").describe("Hi-res fix upscaler method (default: Latent)"),
+  hr_denoising_strength: z.number().default(0.6).describe("Hi-res fix denoising strength (0.0-1.0, default: 0.6)"),
+  hr_second_pass_steps: z.number().default(10).describe("Hi-res fix second pass sampling steps (default: 10)"),
 };
 
 // Define schema for image editing tool
@@ -172,7 +177,7 @@ export function registerImageTools(server: McpServer): void {
       description: "Generate an image using Stable Diffusion from a text prompt",
       inputSchema: generateImageSchema,
     },
-    async ({ prompt, negative_prompt, width, height, cfg_scale, steps, sampler_index, seed }) => {
+    async ({ prompt, negative_prompt, width, height, cfg_scale, steps, sampler_index, seed, enable_hr, hr_scale, hr_upscaler, hr_denoising_strength, hr_second_pass_steps }) => {
       try {
         // Check if API is connected
         const isConnected = await api.checkStatus();
@@ -180,7 +185,7 @@ export function registerImageTools(server: McpServer): void {
           return createErrorResponse("Cannot connect to Stable Diffusion API. Please ensure WebUI is running.");
         }
 
-        console.error(`Image generation request: "${prompt}" (${width}x${height})`);
+        console.error(`Image generation request: "${prompt}" (${width}x${height}, hi-res: ${enable_hr})`);
         
         // Request image generation from Stable Diffusion
         const finalNegativePrompt = buildNegativePrompt(negative_prompt);
@@ -195,7 +200,11 @@ export function registerImageTools(server: McpServer): void {
           steps,
           sampler_name: sampler_index,
           seed,
-          enable_hr: false
+          enable_hr,
+          hr_scale,
+          hr_upscaler,
+          denoising_strength: hr_denoising_strength,
+          hr_second_pass_steps,
         });
 
         if (!base64Image) {

@@ -1,4 +1,4 @@
-# SD WebUI MCP Server
+# SD WebUI MCP Server (fork)
 
 An MCP (Model Context Protocol) server that connects Claude Desktop to your local Stable Diffusion WebUI installation, enabling AI-assisted image generation directly from your conversations.
 
@@ -25,10 +25,12 @@ All while staying within the Claude Desktop interface, without switching between
 * **Privacy-Focused**: All processing happens on your machine
 * **Base64 Thumbnails**: See images directly in Claude responses
 * **SDXL Optimized**: Default settings tuned for SDXL's 1024x1024 resolution
+* **Hi-Res Fix Support**: Optional upscaling pass for higher quality output
+* **Smart Negative Prompts**: Automatically includes standard quality-improving negative prompts, with deduplication
 
 ## 📦 Prerequisites
 
-* Node.js v16.0.0 or higher
+* Node.js v22.0.0 or higher
 * Stable Diffusion WebUI with API enabled
 * Claude Desktop
 * Basic familiarity with command line interfaces
@@ -38,7 +40,7 @@ All while staying within the Claude Desktop interface, without switching between
 ### 1. Clone this repository
 
 ```bash
-git clone https://github.com/boxi-rgb/sd-webui-mcp.git
+git clone https://github.com/cthedark/sd-webui-mcp.git
 cd sd-webui-mcp
 ```
 
@@ -149,6 +151,23 @@ Generate an image of a mountain landscape with the following parameters:
 - Negative prompt: blurry, low quality
 ```
 
+You can also enable hi-res fix for higher quality upscaled output:
+
+```
+Generate an image of a detailed fantasy castle with hi-res fix enabled.
+```
+
+Hi-res fix parameters can be customized:
+
+```
+Generate an image of a portrait with these settings:
+- Enable hi-res fix: true
+- Hi-res scale: 2.0
+- Hi-res upscaler: Latent
+- Hi-res denoising strength: 0.5
+- Hi-res second pass steps: 15
+```
+
 #### 2. Model Switching
 
 First, check available models:
@@ -184,6 +203,8 @@ You can customize the behavior of the MCP server by modifying `src/config.ts`:
 * `SD_API_URL`: The URL of your Stable Diffusion WebUI API (default: http://127.0.0.1:7860)
 * `OUTPUT_DIR`: Directory where generated images will be saved (default: C:\\SD_Output)
 * `DEFAULT_PARAMS`: Default image generation parameters optimized for SDXL (1024x1024 resolution)
+* `USE_DEFAULT_NEGATIVE_PROMPT`: When `true` (default), automatically prepends standard negative prompts (e.g. `bad_anatomy`, `bad_quality`, `ugly`, `watermark`, etc.) to every generation. User-supplied negative prompts are merged and deduplicated.
+* `DEFAULT_NEGATIVE_PROMPTS`: The list of default negative prompt terms. Can be customized to suit your preferred models.
 
 After modifying, rebuild the project with `npm run build`.
 
