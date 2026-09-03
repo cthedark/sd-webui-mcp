@@ -27,6 +27,11 @@ All while staying within the Claude Desktop interface, without switching between
 * **SDXL Optimized**: Default settings tuned for SDXL's 1024x1024 resolution
 * **Hi-Res Fix Support**: Optional upscaling pass for higher quality output
 * **Smart Negative Prompts**: Automatically includes standard quality-improving negative prompts, with deduplication
+* **LoRA Support**: List installed LoRAs with aliases, base model and likely trigger words; apply them by name and the `<lora:...>` tags are built for you
+* **Extension Discovery**: See which extensions and scripts the WebUI has loaded, and inspect a script's argument list
+* **Upscaling**: Pure upscaler passes via the Extras tab (ESRGAN / R-ESRGAN / SwinIR / DAT / 4x-UltraSharp …), with optional face restoration
+* **ADetailer-Neo**: Typed detailing passes wired into both generation tools, with detector names validated against the live dropdown, plus a raw `alwayson_scripts` escape hatch for any other extension
+* **Forge VAE / Text Encoder Control**: Inspect and change `forge_additional_modules` — the same global setting the WebUI's own tab uses
 
 ## 📦 Prerequisites
 
@@ -195,6 +200,176 @@ Edit the image at C:/path/to/image.png to add flowers in the background.
 ```
 What samplers are available in my Stable Diffusion setup?
 ```
+
+#### 5. LoRAs
+
+`list-loras` reads `/sdapi/v1/loras` and reports each LoRA's name, alias, base model
+version and its most frequent training tags (a best-effort guess at trigger words,
+parsed from `ss_tag_frequency` in the safetensors metadata).
+
+```
+What LoRAs do I have installed?
+Show me only the ones with "detail" in the name.
+```
+
+You do not have to write `<lora:...>` tags yourself. Pass LoRAs structurally and the
+server resolves partial names against the installed list, then appends the tags to the
+prompt:
+
+```
+Generate a portrait using the detail tweaker LoRA at 0.7 and my style LoRA at 0.5.
+```
+
+which becomes:
+
+```jsonc
+{
+  "prompt": "a portrait",
+  "loras": [
+    { "name": "detail_tweaker_xl", "weight": 0.7 },
+    { "name": "myStyle_v2", "weight": 0.5, "te_weight": 0.3 }
+  ]
+}
+```
+
+Names are matched exactly first, then case-insensitively, then by unique substring.
+An ambiguous name is an error listing the candidates rather than a guess. `refresh-loras`
+rescans the directory after you drop in a new file, without restarting the WebUI.
+
+> `/sdapi/v1/loras` is registered by the built-in **Lora** extension rather than core
+> `api.py`. If it 404s, that built-in has been disabled.
+
+#### 6. Extensions
+
+```
+What extensions are installed?
+What arguments does the ADetailer script take?
+```
+
+`list-extensions` combines `/sdapi/v1/extensions`, `/sdapi/v1/scripts` and
+`/sdapi/v1/script-info`. Use it to confirm the exact script names this build accepts in
+`alwayson_scripts` before wiring anything up, and pass `script_details` to dump a
+script's positional argument list. Script name matching in the WebUI is case-insensitive,
+so `ADetailer` and `adetailer` both work.
+
+#### 7. Upscaling
+
+`upscale-image` uses the **Extras** tab (`/sdapi/v1/extra-single-image`) — a pure
+upscaler pass with no diffusion, so nothing in the image changes except resolution.
+
+```
+List my upscalers.
+Upscale C:/SD_Output/sd_image_....png 2x with 4x-UltraSharp.
+```
+
+Two resize modes are supported: `multiplier` (scale by `scale`) and `dimensions`
+(target `target_width` × `target_height`, optionally cropping to fit). You can blend a
+second upscaler, and apply GFPGAN or CodeFormer face restoration in the same pass.
+
+The upscaler name is validated against `/sdapi/v1/upscalers` before the request is sent,
+because the extras endpoint silently no-ops on an unknown name — which otherwise looks
+exactly like success.
+
+For a *creative* upscale that adds detail rather than just pixels, use `generate-image`
+with `enable_hr`, or `edit-image` at a low denoising strength.
+
+#### 8. ADetailer (ADetailer-Neo)
+
+Targets [ADetailer-Neo](https://github.com/Haoming02/ADetailer-Neo), the maintained fork
+for Forge Neo. Start by seeing what detectors are installed:
+
+```
+What ADetailer detectors do I have?
+```
+
+`list-adetailer-models` reads the live dropdown choices out of `/sdapi/v1/script-info`,
+so it reflects whatever is actually in `models/adetailer/` rather than a hardcoded list.
+
+Both `generate-image` and `edit-image` accept an `adetailer` array — one entry per
+detection pass — which is translated into the positional payload the extension expects
+(`[enable, skip_img2img, unit, unit, …]`):
+
+```jsonc
+{
+  "prompt": "a knight in a forest",
+  "adetailer": [
+    { "model": "face_yolov8n.pt", "prompt": "detailed face", "denoising_strength": 0.35 },
+    { "model": "hand_yolov8n.pt", "denoising_strength": 0.3, "mask_k": 2 }
+  ]
+}
+```
+
+Detector names are resolved from partial input (`"hand"` → `hand_yolov8n.pt`) and an
+ambiguous or unknown name is rejected with the candidates listed. **This validation
+matters**: Neo declares its `ADetailerArgs` model as `extra="forbid"` and its
+`need_skip()` treats an unrecognised model as "skip this unit", so a bad name produces a
+successful-looking generation that quietly has no detailing at all. The server only ever
+emits keys that exist on `ADetailerArgs`, for the same reason.
+
+Supported per-unit fields, all optional except `model`:
+
+| Group | Fields |
+|---|---|
+| Detection | `model`, `model_classes`, `confidence`, `mask_filter_method`, `mask_k`, `mask_min_ratio`, `mask_max_ratio` |
+| Mask shaping | `dilate_erode`, `x_offset`, `y_offset`, `mask_merge_invert`, `mask_blur` |
+| Inpainting | `prompt`, `negative_prompt`, `denoising_strength`, `inpaint_only_masked`, `inpaint_only_masked_padding`, `inpaint_width`, `inpaint_height` |
+| Per-pass overrides | `steps`, `cfg_scale`, `checkpoint`, `vae`, `sampler`, `scheduler`, `noise_multiplier` |
+| Misc | `restore_face`, `enabled` |
+
+Anything left unset is omitted from the payload so ADetailer applies its own default.
+The paired `ad_use_*` gate flags are set for you — passing `steps: 24` sends both
+`ad_use_steps: true` and `ad_steps: 24`.
+
+#### 8b. Other extensions
+
+ControlNet is deliberately **not** modelled here: model names and preprocessors change
+with whatever ControlNet you have loaded, so a typed wrapper would be wrong more often
+than right. Use `extra_alwayson_scripts` to pass any extension's payload straight
+through:
+
+```jsonc
+{
+  "extra_alwayson_scripts": {
+    "ControlNet": { "args": [{ "enabled": true, "module": "canny", "model": "…", "image": "<base64>" }] },
+    "Self Attention Guidance": { "args": [true, 0.75, 2.0] }
+  }
+}
+```
+
+`list-extensions` with `script_details` gives you the argument order for any script.
+Script name matching in the WebUI is case-insensitive.
+
+#### 9. VAE / Text Encoder modules (Forge)
+
+```
+What VAE and text encoders are loaded right now?
+Load clip_l and t5xxl_fp16 as well.
+```
+
+* `list-vae-modules` — every module Forge has discovered, with the loaded ones marked
+* `set-vae-modules` — change the selection (`replace` or `add`)
+* `get-sd-settings` — current checkpoint, modules, CLIP skip and related global settings
+
+**Does this "stick"?** Yes. The selection lives in `shared.opts.forge_additional_modules`,
+a single global setting inside the running WebUI process. Consequences:
+
+* Whatever the host loaded in its own browser tab **is** the active selection for API
+  requests too. There is nothing to re-send per generation, and nothing to re-load.
+* Writing it through `POST /sdapi/v1/options` is persistent: it applies to every later
+  request and is flushed to `config.json`, so it survives a WebUI restart.
+* The *non*-sticky alternative is `override_settings` inside a txt2img/img2img payload,
+  which the WebUI reverts once the request finishes
+  (`override_settings_restore_afterwards` defaults to `true`). That is the right tool for
+  a one-off and the wrong tool for "load this and keep it".
+* Because the state is shared, changing it from here also changes what the host's UI is
+  using. The already-open browser tab may need a refresh to *display* the new value, but
+  the running process has already switched.
+* Changing the selection forces Forge to drop and rebuild the loaded model, which costs
+  real seconds — so `set-vae-modules` compares against the current value first and does
+  nothing when they already match.
+
+`/sdapi/v1/sd-modules` is Forge-specific. On stock AUTOMATIC1111 the nearest equivalent is
+the single `sd_vae` setting, which follows the same persistence rules.
 
 ## 🔧 Configuration
 

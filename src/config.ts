@@ -34,11 +34,11 @@ export const SEND_FULL_IMAGE_BASE64 = true;
 
 // Default image generation parameters optimized for SDXL (1024x1024)
 export const DEFAULT_PARAMS = {
-  width: 1024, // ← 1024 のまま
-  height: 1024, // ← 1024 のまま
-  steps: 30,
+  width: 832,
+  height: 1216,
+  steps: 24,
   cfg_scale: 7,
   sampler_index: "Euler a",
-  negative_prompt: "",
+  negative_prompt: "bad_anatomy, bad_quality, watermark, text, deformed, blurry, low_quality, ugly, man, Stable_Yogis_Animetoon_Negatives-neg",
   seed: -1
 };
