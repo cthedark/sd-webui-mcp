@@ -64,6 +64,36 @@ function resolveModule(requested: string, available: SDModuleInfo[]): SDModuleIn
   };
 }
 
+/**
+ * Forge's sentinel meaning "whatever the first pass used". When this is present
+ * in hr_additional_modules, processing.py skips modules_change entirely, so the
+ * hi-res pass inherits the loaded VAE / Text Encoder with no model reload.
+ */
+export const USE_SAME_MODULES = "Use same choices";
+
+/**
+ * Resolve VAE / Text Encoder names to the absolute paths Forge expects,
+ * passing the USE_SAME_MODULES sentinel through untouched.
+ *
+ * Used for the hi-res pass, which takes its own module list: Forge Neo declares
+ * `hr_additional_modules: list = field(default=None)` and then iterates it
+ * without a None check, so omitting it from an enable_hr request crashes the
+ * WebUI with "'NoneType' object is not iterable". It must always be a list.
+ */
+export async function resolveModuleSelection(names: string[]): Promise<string[]> {
+  if (names.length === 0) return [];
+  if (names.includes(USE_SAME_MODULES)) return [USE_SAME_MODULES];
+
+  const available = await api.getModules();
+  const resolved: string[] = [];
+  for (const name of names) {
+    const match = resolveModule(name, available);
+    if ("error" in match) throw new Error(match.error);
+    resolved.push(match.filename);
+  }
+  return resolved;
+}
+
 export function registerModuleTools(server: McpServer): void {
   server.registerTool(
     "list-vae-modules",

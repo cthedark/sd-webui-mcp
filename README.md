@@ -27,6 +27,7 @@ All while staying within the Claude Desktop interface, without switching between
 * **SDXL Optimized**: Default settings tuned for SDXL's 1024x1024 resolution
 * **Hi-Res Fix Support**: Optional upscaling pass for higher quality output
 * **Smart Negative Prompts**: Automatically includes standard quality-improving negative prompts, with deduplication
+* **Renders Are Never Lost**: Every generation is a tracked job, so if a client abandons the request the result is still collected with `check-generation`
 * **LoRA Support**: List installed LoRAs with aliases, base model and likely trigger words; apply them by name and the `<lora:...>` tags are built for you
 * **Extension Discovery**: See which extensions and scripts the WebUI has loaded, and inspect a script's argument list
 * **Upscaling**: Pure upscaler passes via the Extras tab (ESRGAN / R-ESRGAN / SwinIR / DAT / 4x-UltraSharp …), with optional face restoration
@@ -172,6 +173,30 @@ Generate an image of a portrait with these settings:
 - Hi-res denoising strength: 0.5
 - Hi-res second pass steps: 15
 ```
+
+#### 1b. Hi-res fix and `hr_additional_modules`
+
+On Forge Neo, any `enable_hr` request **must** include `hr_additional_modules` as a list.
+The field is declared `hr_additional_modules: list = field(default=None)` and then
+iterated without a `None` check, so omitting it crashes the WebUI mid-request with:
+
+```
+File "modules_forge\main_entry.py", line 160, in modules_change
+    for v in module_values:
+TypeError: 'NoneType' object is not iterable
+```
+
+The server always sends it when hi-res fix is on. By default it sends the
+`"Use same choices"` sentinel, which makes `processing.py` skip `modules_change`
+entirely so the second pass inherits the loaded VAE / Text Encoder with no model reload.
+
+Override it with `hr_modules` when you want something else:
+
+| `hr_modules` | Effect |
+|---|---|
+| omitted | `["Use same choices"]` — reuse the first pass's modules (default) |
+| `[]` | fall back to the checkpoint's built-in VAE / text encoders |
+| `["clip_l", "sdxl_vae"]` | load these for the second pass (names resolved via `list-vae-modules`) |
 
 #### 2. Model Switching
 
@@ -371,6 +396,51 @@ a single global setting inside the running WebUI process. Consequences:
 `/sdapi/v1/sd-modules` is Forge-specific. On stock AUTOMATIC1111 the nearest equivalent is
 the single `sd_vae` setting, which follows the same persistence rules.
 
+## ⏱️ Long generations
+
+A generation request to the WebUI is allowed **10 minutes** (`GENERATION_TIMEOUT_MS`),
+and by default the tool waits that long for the image and returns it inline. On any MCP
+client with a reasonable request deadline, that is all you need to know.
+
+Underneath, every generation is registered as a **job**, which makes a render impossible
+to lose. Two things can end the tool call before the image is ready:
+
+* the wait window (`GENERATION_WAIT_SECONDS`) elapsing, or
+* the **client** hitting its own request deadline — one the server can neither see nor
+  change. The MCP TypeScript SDK defaults to 60s, and not every host exposes a setting
+  for it.
+
+In both cases the WebUI keeps rendering and the result is held here for an hour:
+
+```
+generate-image   → "Still rendering after 60s… Job id: txt2img-a1b2c3d4, Progress: 62%"
+check-generation → [the image]
+```
+
+`check-generation` with no arguments picks up the job you are most likely waiting on, so
+in practice it is just "call it again". `list-generations` shows everything started this
+session and whether it has been collected; `cancel-generation` interrupts the running render.
+
+**Tuning.** `wait_seconds` (per call) and `SD_GENERATION_WAIT_SECONDS` (server-wide)
+control only *when* you get a job id instead of the image — never whether the render
+completes. Lower them if your client abandons requests early and you would rather have a
+clean handoff than a request the client drops; there is no reason to lower them otherwise.
+
+| Client | Notes |
+|---|---|
+| Any client with a generous or configurable deadline | Defaults are fine — images return inline. |
+| Claude Code | Honours a per-server `timeout` (ms) in `.mcp.json` and `MCP_TOOL_TIMEOUT`. |
+| Claude Desktop | Hardcoded ~60s, not configurable. Renders past that come back via `check-generation`; set `SD_GENERATION_WAIT_SECONDS=55` if you prefer the handoff over a dropped request. |
+
+The server also emits `notifications/progress` while waiting, when the client supplies a
+progress token. That does not extend a hard request deadline, but it does reset the
+*idle* timeout some clients apply, and it surfaces the percentage where supported.
+
+> **Note on retries:** a timeout is never retried. The request reached the WebUI and the
+> GPU is busy with that job, so a retry would queue a duplicate render behind it rather
+> than recover from anything. Only connection-level failures — the WebUI still starting
+> up, a reset socket — are retried.
+
 ## 🔧 Configuration
 
 You can customize the behavior of the MCP server by modifying `src/config.ts`:
@@ -380,6 +450,8 @@ You can customize the behavior of the MCP server by modifying `src/config.ts`:
 * `DEFAULT_PARAMS`: Default image generation parameters optimized for SDXL (1024x1024 resolution)
 * `USE_DEFAULT_NEGATIVE_PROMPT`: When `true` (default), automatically prepends standard negative prompts (e.g. `bad_anatomy`, `bad_quality`, `ugly`, `watermark`, etc.) to every generation. User-supplied negative prompts are merged and deduplicated.
 * `DEFAULT_NEGATIVE_PROMPTS`: The list of default negative prompt terms. Can be customized to suit your preferred models.
+* `GENERATION_TIMEOUT_MS`: Hard ceiling for one generation request to the WebUI (default: 600000, i.e. 10 minutes). Override with `SD_GENERATION_TIMEOUT_MS`.
+* `GENERATION_WAIT_SECONDS`: How long a generation tool waits for the image before handing back a job id instead (default: the full generation timeout, i.e. 600s). Override with `SD_GENERATION_WAIT_SECONDS`. This never affects whether a render completes — only whether you collect it on the first call or via `check-generation`.
 
 After modifying, rebuild the project with `npm run build`.
 

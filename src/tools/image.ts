@@ -7,15 +7,18 @@ import {
   SD_API_URL,
   USE_DEFAULT_NEGATIVE_PROMPT,
   DEFAULT_NEGATIVE_PROMPTS,
+  GENERATION_WAIT_SECONDS,
+  GENERATION_TIMEOUT_MS,
 } from '../config.js';
 import {
   saveBase64Image,
   validateImagePath,
   readImageAsBase64,
-  imageToResponseBase64,
   createErrorResponse,
-  createImageResponse,
 } from '../utils/image-io.js';
+import { runAsJob, deliverJob, ProgressContext } from './job-response.js';
+import { getJob, listJobs, pickDefaultJob, runningJobs, waitForJob, describeElapsed } from '../jobs.js';
+import { resolveModuleSelection, USE_SAME_MODULES } from './modules.js';
 import {
   buildLoraTags,
   loadLorasForResolution,
@@ -90,8 +93,23 @@ const generateImageSchema = {
   hr_upscaler: z.string().default("Latent").describe("Hi-res fix upscaler method; see list-upscalers (default: Latent)"),
   hr_denoising_strength: z.number().default(0.6).describe("Hi-res fix denoising strength (0.0-1.0, default: 0.6)"),
   hr_second_pass_steps: z.number().default(10).describe("Hi-res fix second pass sampling steps (default: 10)"),
+  hr_modules: z
+    .array(z.string())
+    .optional()
+    .describe(
+      "VAE / Text Encoder modules for the hi-res pass. Omit to reuse the first pass's modules " +
+      "(the default, and almost always what you want); pass an empty array to fall back to the " +
+      "checkpoint's built-in modules; or name modules from list-vae-modules to switch for the second pass."
+    ),
   adetailer: adetailerSchema,
   extra_alwayson_scripts: extraAlwaysonSchema,
+  wait_seconds: z
+    .number()
+    .optional()
+    .describe(
+      `How long to wait for the image before returning a job id instead (default: ${GENERATION_WAIT_SECONDS}s). ` +
+      `The generation continues either way; collect it with check-generation.`
+    ),
 };
 
 // Define schema for image editing tool
@@ -108,6 +126,13 @@ const editImageSchema = {
   seed: z.number().default(-1).describe("Random seed (-1 for random)"),
   adetailer: adetailerSchema,
   extra_alwayson_scripts: extraAlwaysonSchema,
+  wait_seconds: z
+    .number()
+    .optional()
+    .describe(
+      `How long to wait for the image before returning a job id instead (default: ${GENERATION_WAIT_SECONDS}s). ` +
+      `The edit continues either way; collect it with check-generation.`
+    ),
 };
 
 export function registerImageTools(server: McpServer): void {
@@ -119,16 +144,15 @@ export function registerImageTools(server: McpServer): void {
         "hi-res fix, and ADetailer detailing passes (see list-adetailer-models).",
       inputSchema: generateImageSchema,
     },
-    async ({ prompt, negative_prompt, loras, width, height, cfg_scale, steps, sampler_index, scheduler, seed, enable_hr, hr_scale, hr_upscaler, hr_denoising_strength, hr_second_pass_steps, adetailer, extra_alwayson_scripts }) => {
+    async ({ prompt, negative_prompt, loras, width, height, cfg_scale, steps, sampler_index, scheduler, seed, enable_hr, hr_scale, hr_upscaler, hr_denoising_strength, hr_second_pass_steps, hr_modules, adetailer, extra_alwayson_scripts, wait_seconds }, extra) => {
       try {
-        // Check if API is connected
         const isConnected = await api.checkStatus();
         if (!isConnected) {
           return createErrorResponse("Cannot connect to Stable Diffusion API. Please ensure WebUI is running.");
         }
 
-        // Resolve and append LoRA tags before anything else, so a bad LoRA name
-        // fails fast instead of after a full generation.
+        // Resolve LoRA tags and extension arguments before starting anything,
+        // so a bad name fails immediately instead of after a full render.
         let finalPrompt: string;
         let loraTags: string;
         try {
@@ -181,34 +205,41 @@ export function registerImageTools(server: McpServer): void {
           payload.hr_upscaler = hr_upscaler;
           payload.denoising_strength = hr_denoising_strength;
           payload.hr_second_pass_steps = hr_second_pass_steps;
+
+          // hr_additional_modules MUST be a list whenever hi-res fix is on.
+          // Forge Neo declares it as `hr_additional_modules: list = field(default=None)`
+          // and then iterates it without a None check, so leaving it out of the
+          // payload crashes the WebUI in modules_change() with
+          // "'NoneType' object is not iterable" rather than returning an error.
+          // The "Use same choices" sentinel makes processing.py skip
+          // modules_change entirely, so the second pass inherits the loaded
+          // VAE / Text Encoder without triggering a model reload.
+          try {
+            payload.hr_additional_modules = await resolveModuleSelection(
+              hr_modules ?? [USE_SAME_MODULES]
+            );
+          } catch (error) {
+            return createErrorResponse(
+              `Could not resolve hr_modules: ${error instanceof Error ? error.message : String(error)}`
+            );
+          }
         }
 
         if (alwaysonScripts) payload.alwayson_scripts = alwaysonScripts;
 
-        const base64Image = await api.textToImage(payload);
-
-        if (!base64Image) {
-          return createErrorResponse("Failed to generate image. No response from Stable Diffusion API.");
-        }
-
-        try {
-          const imagePath = await saveBase64Image(base64Image);
-          console.error(`Image saved: ${imagePath}`);
-
-          const responseImage = await imageToResponseBase64(imagePath);
-
-          return createImageResponse(
-            `Image successfully generated: "${prompt}"` +
-              (loraTags ? `\nLoRAs: ${loraTags}` : "") +
-              describeAlwayson(alwaysonScripts) +
-              `\n\nImage path: ${imagePath}`,
-            responseImage.data,
-            responseImage.mimeType
-          );
-        } catch (saveError) {
-          console.error("Image save error:", saveError);
-          return createErrorResponse(`Image generation succeeded, but an error occurred during saving: ${saveError instanceof Error ? saveError.message : String(saveError)}`);
-        }
+        return await runAsJob({
+          kind: "txt2img",
+          label: prompt,
+          headline: `Image successfully generated: "${prompt}"`,
+          details:
+            (loraTags ? `\nLoRAs: ${loraTags}` : "") + describeAlwayson(alwaysonScripts),
+          waitSeconds: wait_seconds ?? GENERATION_WAIT_SECONDS,
+          context: extra as ProgressContext,
+          work: async () => {
+            const base64Image = await api.textToImage(payload, GENERATION_TIMEOUT_MS);
+            return await saveBase64Image(base64Image);
+          },
+        });
       } catch (error) {
         console.error("Image generation error:", error);
         return createErrorResponse(`Error occurred during image generation: ${error instanceof Error ? error.message : String(error)}`);
@@ -224,16 +255,14 @@ export function registerImageTools(server: McpServer): void {
         "passes. For a pure resolution increase with no other changes, use upscale-image instead.",
       inputSchema: editImageSchema,
     },
-    async ({ image_path, prompt, negative_prompt, loras, denoising_strength, cfg_scale, steps, sampler_index, scheduler, seed, adetailer, extra_alwayson_scripts }) => {
+    async ({ image_path, prompt, negative_prompt, loras, denoising_strength, cfg_scale, steps, sampler_index, scheduler, seed, adetailer, extra_alwayson_scripts, wait_seconds }, extra) => {
       try {
-        // Validate image path
         if (!await validateImagePath(image_path)) {
           return createErrorResponse(
             `Invalid image path: ${image_path}. Please specify a path to a valid image file.`
           );
         }
 
-        // Check if API is connected
         const isConnected = await api.checkStatus();
         if (!isConnected) {
           return createErrorResponse("Cannot connect to Stable Diffusion API. Please ensure WebUI is running.");
@@ -266,53 +295,194 @@ export function registerImageTools(server: McpServer): void {
 
         console.error(`Image edit request: "${finalPrompt}" (input: ${image_path})`);
 
-        try {
-          const base64Image = await readImageAsBase64(image_path);
+        const base64Image = await readImageAsBase64(image_path);
+        const finalNegativePrompt = buildNegativePrompt(negative_prompt);
+        console.error(`Using negative prompt: "${finalNegativePrompt}"`);
 
-          const finalNegativePrompt = buildNegativePrompt(negative_prompt);
-          console.error(`Using negative prompt: "${finalNegativePrompt}"`);
+        const payload: Record<string, unknown> = {
+          init_images: [base64Image],
+          prompt: finalPrompt,
+          negative_prompt: finalNegativePrompt,
+          denoising_strength,
+          cfg_scale,
+          steps,
+          sampler_name: sampler_index,
+          seed,
+        };
 
-          const payload: Record<string, unknown> = {
-            init_images: [base64Image],
-            prompt: finalPrompt,
-            negative_prompt: finalNegativePrompt,
-            denoising_strength,
-            cfg_scale,
-            steps,
-            sampler_name: sampler_index,
-            seed,
-          };
+        if (scheduler) payload.scheduler = scheduler;
+        if (alwaysonScripts) payload.alwayson_scripts = alwaysonScripts;
 
-          if (scheduler) payload.scheduler = scheduler;
-          if (alwaysonScripts) payload.alwayson_scripts = alwaysonScripts;
-
-          const resultBase64 = await api.imageToImage(payload);
-
-          if (!resultBase64) {
-            return createErrorResponse("Failed to edit image. No response from Stable Diffusion API.");
-          }
-
-          const editedImagePath = await saveBase64Image(resultBase64);
-          console.error(`Edited image saved: ${editedImagePath}`);
-
-          const responseImage = await imageToResponseBase64(editedImagePath);
-
-          return createImageResponse(
-            `Image successfully edited: "${prompt}"` +
-              (loraTags ? `\nLoRAs: ${loraTags}` : "") +
-              describeAlwayson(alwaysonScripts) +
-              `\n\nOriginal image: ${image_path}\nEdited image: ${editedImagePath}`,
-            responseImage.data,
-            responseImage.mimeType
-          );
-        } catch (processError) {
-          console.error("Image processing error:", processError);
-          return createErrorResponse(`Error occurred while reading or processing the image: ${processError instanceof Error ? processError.message : String(processError)}`);
-        }
+        return await runAsJob({
+          kind: "img2img",
+          label: prompt,
+          headline: `Image successfully edited: "${prompt}"`,
+          details:
+            (loraTags ? `\nLoRAs: ${loraTags}` : "") +
+            describeAlwayson(alwaysonScripts) +
+            `\nOriginal image: ${image_path}`,
+          waitSeconds: wait_seconds ?? GENERATION_WAIT_SECONDS,
+          context: extra as ProgressContext,
+          work: async () => {
+            const resultBase64 = await api.imageToImage(payload, GENERATION_TIMEOUT_MS);
+            return await saveBase64Image(resultBase64);
+          },
+        });
       } catch (error) {
         console.error("Image editing error:", error);
         return createErrorResponse(`Error occurred during image editing: ${error instanceof Error ? error.message : String(error)}`);
       }
+    }
+  );
+
+  // -------------------------------------------------------------------------
+  // Collecting results that outlived the client's request deadline
+  // -------------------------------------------------------------------------
+
+  server.registerTool(
+    "check-generation",
+    {
+      description:
+        "Collect the result of a generation that was still running when generate-image, edit-image or " +
+        "upscale-image returned a job id. With no arguments it picks up the job you are most likely " +
+        "waiting on. Waits for the image if it is nearly ready, and reports live progress otherwise.",
+      inputSchema: {
+        job_id: z
+          .string()
+          .optional()
+          .describe("Job id to collect; omit to pick up the most relevant pending job"),
+        wait_seconds: z
+          .number()
+          .optional()
+          .describe(
+            `How long to wait for the job to finish before reporting progress (default: ${GENERATION_WAIT_SECONDS}s)`
+          ),
+      },
+    },
+    async ({ job_id, wait_seconds }) => {
+      const job = job_id ? getJob(job_id) : pickDefaultJob();
+
+      if (!job) {
+        const all = listJobs();
+        return createErrorResponse(
+          job_id
+            ? `No job with id "${job_id}". ` +
+              (all.length
+                ? `Known jobs:\n\n` + all.map(j => `\u2022 ${j.id} — ${j.status} — "${j.label}"`).join("\n")
+                : `No generations have been started in this session.`)
+            : `No generations have been started in this session.`
+        );
+      }
+
+      if (job.status === "running") {
+        await waitForJob(job, Math.max(1, wait_seconds ?? GENERATION_WAIT_SECONDS) * 1000);
+      }
+
+      if (job.status === "done") {
+        return await deliverJob(job, `Job ${job.id} finished: "${job.label}"`);
+      }
+
+      if (job.status === "error") {
+        job.delivered = true;
+        return createErrorResponse(
+          `Job ${job.id} failed after ${describeElapsed(job)}.\n\n${job.error}`
+        );
+      }
+
+      let progressLine = "";
+      try {
+        const progress = await api.getProgress();
+        const percent = Math.round((progress.progress ?? 0) * 100);
+        const eta = Math.round(progress.eta_relative ?? 0);
+        progressLine =
+          `\nProgress: ${percent}%` +
+          (progress.state?.sampling_steps
+            ? ` (step ${progress.state.sampling_step}/${progress.state.sampling_steps})`
+            : "") +
+          (eta > 0 ? `, roughly ${eta}s remaining` : "");
+      } catch {
+        /* progress is optional */
+      }
+
+      return {
+        content: [
+          {
+            type: "text" as const,
+            text:
+              `Job ${job.id} is still running after ${describeElapsed(job)}: "${job.label}"${progressLine}\n\n` +
+              `Call check-generation again to keep waiting, or cancel-generation to stop it.`,
+          },
+        ],
+      };
+    }
+  );
+
+  server.registerTool(
+    "list-generations",
+    {
+      description: "List generations started in this session and whether their results have been collected",
+    },
+    async () => {
+      const all = listJobs();
+      if (all.length === 0) {
+        return { content: [{ type: "text" as const, text: "No generations have been started in this session." }] };
+      }
+
+      return {
+        content: [
+          {
+            type: "text" as const,
+            text:
+              `${all.length} generation(s), newest first:\n\n` +
+              all
+                .map(j => {
+                  const state =
+                    j.status === "running"
+                      ? `running (${describeElapsed(j)} so far)`
+                      : j.status === "done"
+                      ? `done in ${describeElapsed(j)}${j.delivered ? "" : " — not yet collected"}`
+                      : `failed after ${describeElapsed(j)}`;
+                  return `\u2022 ${j.id} — ${state}\n  "${j.label}"` + (j.imagePath ? `\n  ${j.imagePath}` : "");
+                })
+                .join("\n\n"),
+          },
+        ],
+      };
+    }
+  );
+
+  server.registerTool(
+    "cancel-generation",
+    {
+      description:
+        "Interrupt the generation the WebUI is currently working on. This stops whatever is rendering " +
+        "now, which is the running job unless something was queued behind it.",
+    },
+    async () => {
+      const running = runningJobs();
+
+      try {
+        await api.interrupt();
+      } catch (error) {
+        return createErrorResponse(
+          `Could not interrupt the WebUI.\n\n${error instanceof Error ? error.message : String(error)}`
+        );
+      }
+
+      return {
+        content: [
+          {
+            type: "text" as const,
+            text:
+              `Sent an interrupt to the WebUI.` +
+              (running.length
+                ? `\n\nJobs that were running:\n` +
+                  running.map(j => `\u2022 ${j.id} — "${j.label}"`).join("\n") +
+                  `\n\nAn interrupted generation usually returns a partial image rather than an error.`
+                : `\n\nNo jobs were tracked as running, so this only affects work started elsewhere.`),
+          },
+        ],
+      };
     }
   );
 }

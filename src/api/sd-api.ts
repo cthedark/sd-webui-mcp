@@ -113,6 +113,55 @@ export interface SDExtrasParams {
   show_extras_results?: boolean;
 }
 
+/** GET /sdapi/v1/progress */
+export interface SDProgress {
+  progress: number;
+  eta_relative: number;
+  state: {
+    skipped: boolean;
+    interrupted: boolean;
+    job: string;
+    job_count: number;
+    job_no: number;
+    sampling_step: number;
+    sampling_steps: number;
+  };
+  textinfo?: string | null;
+}
+
+// ---------------------------------------------------------------------------
+// Errors
+// ---------------------------------------------------------------------------
+//
+// These are distinguished because they need different handling: a connection
+// error is worth retrying (the WebUI may still be starting up), while a timeout
+// is NOT — the request reached the WebUI and the GPU is busy with it, so
+// retrying just queues a duplicate job behind the one already running.
+
+/** The request was sent but no response arrived within the deadline. */
+export class SDTimeoutError extends Error {
+  constructor(public endpoint: string, public timeoutMs: number) {
+    super(`Request to ${endpoint} timed out after ${Math.round(timeoutMs / 1000)}s.`);
+    this.name = "SDTimeoutError";
+  }
+}
+
+/** The request never reached the WebUI (refused, DNS, socket reset). */
+export class SDConnectionError extends Error {
+  constructor(url: string, cause: unknown) {
+    super(`Could not reach ${url}: ${cause instanceof Error ? cause.message : String(cause)}`);
+    this.name = "SDConnectionError";
+  }
+}
+
+/** The WebUI answered with a non-2xx status. */
+export class SDHttpError extends Error {
+  constructor(public endpoint: string, public status: number, statusText: string, body?: string) {
+    super(`${endpoint} failed: ${status} ${statusText}${body ? ` - ${body.slice(0, 500)}` : ""}`);
+    this.name = "SDHttpError";
+  }
+}
+
 // ---------------------------------------------------------------------------
 // Client
 // ---------------------------------------------------------------------------
@@ -140,7 +189,12 @@ export class StableDiffusionAPI {
     }
   }
 
-  // Retry helper method
+  /**
+   * Retry helper. Only retries failures where the request never reached the
+   * WebUI — a timeout is deliberately NOT retried: the GPU is already working
+   * on that job, so a second attempt queues a duplicate generation behind it
+   * and multiplies the wait instead of recovering from anything.
+   */
   private async withRetry<T>(
     fn: () => Promise<T>,
     maxRetries = 3,
@@ -153,8 +207,12 @@ export class StableDiffusionAPI {
         return await fn();
       } catch (error) {
         lastError = error;
+
+        if (!(error instanceof SDConnectionError)) {
+          throw error;
+        }
         if (attempt < maxRetries - 1) {
-          console.error(`Attempt ${attempt + 1} failed. Retrying in ${delayMs}ms...`);
+          console.error(`Attempt ${attempt + 1} failed to connect. Retrying in ${delayMs}ms...`);
           await new Promise(resolve => setTimeout(resolve, delayMs));
         }
       }
@@ -175,9 +233,9 @@ export class StableDiffusionAPI {
       response = await this.fetchWithTimeout(`${this.baseUrl}${endpoint}`, {}, timeoutMs);
     } catch (error) {
       if (error instanceof Error && error.name === 'AbortError') {
-        throw new Error(`Request to ${endpoint} timed out after ${timeoutMs}ms.`);
+        throw new SDTimeoutError(endpoint, timeoutMs);
       }
-      throw new Error(`Could not reach ${this.baseUrl}${endpoint}: ${error instanceof Error ? error.message : String(error)}`);
+      throw new SDConnectionError(`${this.baseUrl}${endpoint}`, error);
     }
 
     if (response.status === 404) {
@@ -188,7 +246,7 @@ export class StableDiffusionAPI {
     }
     if (!response.ok) {
       const body = await response.text().catch(() => "");
-      throw new Error(`${endpoint} failed: ${response.status} ${response.statusText}${body ? ` - ${body.slice(0, 500)}` : ""}`);
+      throw new SDHttpError(endpoint, response.status, response.statusText, body);
     }
 
     return await response.json() as T;
@@ -205,9 +263,9 @@ export class StableDiffusionAPI {
       }, timeoutMs);
     } catch (error) {
       if (error instanceof Error && error.name === 'AbortError') {
-        throw new Error(`Request to ${endpoint} timed out after ${timeoutMs}ms.`);
+        throw new SDTimeoutError(endpoint, timeoutMs);
       }
-      throw new Error(`Could not reach ${this.baseUrl}${endpoint}: ${error instanceof Error ? error.message : String(error)}`);
+      throw new SDConnectionError(`${this.baseUrl}${endpoint}`, error);
     }
 
     if (response.status === 404) {
@@ -218,7 +276,7 @@ export class StableDiffusionAPI {
     }
     if (!response.ok) {
       const errText = await response.text().catch(() => "");
-      throw new Error(`${endpoint} failed: ${response.status} ${response.statusText}${errText ? ` - ${errText.slice(0, 500)}` : ""}`);
+      throw new SDHttpError(endpoint, response.status, response.statusText, errText);
     }
 
     const text = await response.text();
@@ -402,36 +460,43 @@ export class StableDiffusionAPI {
   }
 
   // -------------------------------------------------------------------------
-  // Generation
+  // Progress / interruption
   // -------------------------------------------------------------------------
 
-  async textToImage(params: any, timeoutMs = 600000): Promise<string | null> {
-    try {
-      return await this.withRetry(async () => {
-        const data = await this.postJson<SDTextToImageResponse>("/sdapi/v1/txt2img", params, timeoutMs);
-        if (!data || !data.images || data.images.length === 0) {
-          throw new Error("Text-to-image API did not return any images");
-        }
-        return data.images[0];
-      });
-    } catch (error) {
-      console.error("Failed to call text-to-image API even after retries:", error);
-      return null;
-    }
+  /** GET /sdapi/v1/progress — live progress of whatever the WebUI is doing. */
+  async getProgress(): Promise<SDProgress> {
+    return await this.getJson<SDProgress>("/sdapi/v1/progress?skip_current_image=true", 15000);
   }
 
-  async imageToImage(params: any, timeoutMs = 600000): Promise<string | null> {
-    try {
-      return await this.withRetry(async () => {
-        const data = await this.postJson<SDImageToImageResponse>("/sdapi/v1/img2img", params, timeoutMs);
-        if (!data || !data.images || data.images.length === 0) {
-          throw new Error("Image-to-image API did not return any images");
-        }
-        return data.images[0];
-      });
-    } catch (error) {
-      console.error("Failed to call image-to-image API even after retries:", error);
-      return null;
-    }
+  /** POST /sdapi/v1/interrupt — stop the in-flight generation. */
+  async interrupt(): Promise<void> {
+    await this.postJson<void>("/sdapi/v1/interrupt", {}, 15000);
+  }
+
+  // -------------------------------------------------------------------------
+  // Generation
+  // -------------------------------------------------------------------------
+  //
+  // These throw rather than returning null, so the caller can tell a timeout
+  // from a refused connection from a WebUI-side error and report accordingly.
+
+  async textToImage(params: any, timeoutMs = 600000): Promise<string> {
+    return await this.withRetry(async () => {
+      const data = await this.postJson<SDTextToImageResponse>("/sdapi/v1/txt2img", params, timeoutMs);
+      if (!data || !data.images || data.images.length === 0) {
+        throw new Error("Text-to-image API did not return any images.");
+      }
+      return data.images[0];
+    });
+  }
+
+  async imageToImage(params: any, timeoutMs = 600000): Promise<string> {
+    return await this.withRetry(async () => {
+      const data = await this.postJson<SDImageToImageResponse>("/sdapi/v1/img2img", params, timeoutMs);
+      if (!data || !data.images || data.images.length === 0) {
+        throw new Error("Image-to-image API did not return any images.");
+      }
+      return data.images[0];
+    });
   }
 }

@@ -7,17 +7,16 @@
 import { z } from "zod";
 import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import { StableDiffusionAPI } from "../api/sd-api.js";
-import { SD_API_URL } from "../config.js";
+import { SD_API_URL, GENERATION_WAIT_SECONDS } from "../config.js";
 import { fetchAdetailerModels } from "./alwayson.js";
 import {
   validateImagePath,
   readImageAsBase64,
   saveBase64Image,
-  imageToResponseBase64,
   imageDimensions,
   createErrorResponse,
-  createImageResponse,
 } from "../utils/image-io.js";
+import { runAsJob, ProgressContext } from "./job-response.js";
 
 const api = new StableDiffusionAPI(SD_API_URL);
 
@@ -255,6 +254,13 @@ export function registerExtrasTools(server: McpServer): void {
           .boolean()
           .default(false)
           .describe("Run the upscaler before face restoration instead of after (default: false)"),
+        wait_seconds: z
+          .number()
+          .optional()
+          .describe(
+            `How long to wait before returning a job id instead (default: ${GENERATION_WAIT_SECONDS}s). ` +
+            `The upscale continues either way; collect it with check-generation.`
+          ),
       },
     },
     async ({
@@ -271,7 +277,8 @@ export function registerExtrasTools(server: McpServer): void {
       codeformer_visibility,
       codeformer_weight,
       upscale_first,
-    }) => {
+      wait_seconds,
+    }, extra) => {
       try {
         if (!(await validateImagePath(image_path))) {
           return createErrorResponse(
@@ -332,38 +339,39 @@ export function registerExtrasTools(server: McpServer): void {
         );
 
         const base64Input = await readImageAsBase64(image_path);
+        const upscalerLabel =
+          upscaler + (second_upscaler ? ` + ${second_upscaler} @ ${second_upscaler_visibility}` : "");
 
-        const resultBase64 = await api.extraSingleImage({
-          image: base64Input,
-          resize_mode: resize_mode === "dimensions" ? 1 : 0,
-          upscaling_resize: scale,
-          upscaling_resize_w: target_width,
-          upscaling_resize_h: target_height,
-          upscaling_crop: crop_to_fit,
-          upscaler_1: upscaler,
-          upscaler_2: second_upscaler ?? "None",
-          extras_upscaler_2_visibility: second_upscaler ? second_upscaler_visibility : 0,
-          gfpgan_visibility,
-          codeformer_visibility,
-          codeformer_weight,
-          upscale_first,
+        return await runAsJob({
+          kind: "upscale",
+          label: `${upscalerLabel} on ${image_path}`,
+          headline: `Upscaled with ${upscalerLabel}`,
+          details: `\nSource: ${image_path} (${before.width}x${before.height})`,
+          waitSeconds: wait_seconds ?? GENERATION_WAIT_SECONDS,
+          context: extra as ProgressContext,
+          work: async () => {
+            const resultBase64 = await api.extraSingleImage({
+              image: base64Input,
+              resize_mode: resize_mode === "dimensions" ? 1 : 0,
+              upscaling_resize: scale,
+              upscaling_resize_w: target_width,
+              upscaling_resize_h: target_height,
+              upscaling_crop: crop_to_fit,
+              upscaler_1: upscaler,
+              upscaler_2: second_upscaler ?? "None",
+              extras_upscaler_2_visibility: second_upscaler ? second_upscaler_visibility : 0,
+              gfpgan_visibility,
+              codeformer_visibility,
+              codeformer_weight,
+              upscale_first,
+            });
+
+            const outputPath = await saveBase64Image(resultBase64, "sd_upscaled");
+            const after = await imageDimensions(outputPath);
+            console.error(`Upscaled image saved: ${outputPath} (${after.width}x${after.height})`);
+            return outputPath;
+          },
         });
-
-        const outputPath = await saveBase64Image(resultBase64, "sd_upscaled");
-        const after = await imageDimensions(outputPath);
-        console.error(`Upscaled image saved: ${outputPath} (${after.width}x${after.height})`);
-
-        const responseImage = await imageToResponseBase64(outputPath);
-
-        return createImageResponse(
-          `Upscaled with ${upscaler}` +
-            (second_upscaler ? ` + ${second_upscaler} @ ${second_upscaler_visibility}` : "") +
-            `\n\n${before.width}x${before.height} → ${after.width}x${after.height}` +
-            `\nSource: ${image_path}` +
-            `\nOutput: ${outputPath}`,
-          responseImage.data,
-          responseImage.mimeType
-        );
       } catch (error) {
         console.error("Upscale error:", error);
         return createErrorResponse(

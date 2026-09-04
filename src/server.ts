@@ -31,6 +31,9 @@ console.error("Stable Diffusion MCP Server initialized with the following tools:
 console.error("  Generation");
 console.error("   - generate-image: Generate an image from a text prompt");
 console.error("   - edit-image: Edit an existing image using a text prompt");
+console.error("   - check-generation: Collect a generation that outlived the client's timeout");
+console.error("   - list-generations: List generations started in this session");
+console.error("   - cancel-generation: Interrupt the running generation");
 console.error("  Models");
 console.error("   - list-models: List available Stable Diffusion checkpoints");
 console.error("   - change-model: Change the active checkpoint");
